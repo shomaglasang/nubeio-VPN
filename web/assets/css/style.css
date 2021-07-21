@@ -1,0 +1,18 @@
+body {
+  font-family: Arial, Georgia, Serif;
+}
+
+table {
+  border-collapse: collapse;
+}
+
+.online table, .online th, .online td {
+  font-size: 15px;
+  border: 1px solid #ddd;
+}
+
+th, td {
+  padding: 5px;
+  text-align: left;
+}
+
