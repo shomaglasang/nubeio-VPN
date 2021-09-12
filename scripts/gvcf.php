@@ -46,11 +46,10 @@ function print_usage($code)
 {
   global $prog_name;
 
-  echo "Usage: $prog_name <-n client_name><-c customer_name>[-hvdOVSD][-t type][-D client_description]\n" .
+  echo "Usage: $prog_name <-n client_name><-c customer_name>[-hvOVSD][-t type][-D client_description]\n" .
        "  Where:\n" .
        "    h = Show help\n" .
        "    v = Verbose\n" .
-       "    d = Dry-run\n" .
        "    O = Overwrite existing configs/cert/key\n" .
        "    V = Do not create client VPN config\n" .
        "    S = Do not create client specific config\n" .
@@ -59,6 +58,8 @@ function print_usage($code)
        "    n = Client common name\n" .
        "    D = Client description\n" .
        "    c = Customer name\n" .
+       "    d = Device VPN IP pool network. Default to 10.8.1\n" .
+       "    u = User VPN IP pool network. Defalt 10.8.200\n" .
        "\n";
 
   exit($code);
@@ -78,7 +79,7 @@ function parse_args()
     return(0);
   }
 
-  $opt_str = "hvdOVSDt:c:n:D:a:p:";
+  $opt_str = "hvOVSDt:c:n:D:a:p:d:u:";
 
   $opts = getopt($opt_str);
   if (!$opts)
@@ -145,6 +146,16 @@ function parse_args()
   if (isset($opts['D']))
   { 
     $options['add_client_to_db'] = false;
+  }
+
+  if (isset($opts['d']))
+  { 
+    $options['device_vpn_ip_pool'] = $opts['d'];
+  }
+
+  if (isset($opts['u']))
+  { 
+    $options['user_vpn_ip_pool'] = $opts['u'];
   }
 }
 
@@ -297,7 +308,221 @@ function create_vpn_config($options, $ccb)
   fwrite($fd, "</tls-auth>\n");
   fclose($fd);
 
+  do_log("-- Generated: $ovpn_path", LOG_ALL);
+
   return(RET_OK);
+}
+
+
+/*
+ * Create client specific config.
+ */
+function create_client_config($options, $ccb)
+{
+  global $vpn_ip_last_octet;
+
+  do_log("- Generating client specific configuration.", LOG_ALL);
+  if ($options['type'] == 'device')
+  {
+    $start_ip_pool = $options['device_vpn_ip_pool'];
+    $end_ip_pool = $options['user_vpn_ip_pool'];
+  }
+  else
+  {
+    $start_ip_pool = $options['user_vpn_ip_pool'];
+    $a = explode('.', $start_ip_pool);
+    $end_ip_pool = sprintf("%s.%s.255", $a[0], $a[1]);
+  }
+
+  do_log("-- Start VPN IP Pool: $start_ip_pool", LOG_ALL);
+  do_log("-- End VPN IP Pool: $end_ip_pool", LOG_ALL);
+
+  $clients = get_customer_clients($options['customer_name'], $options['type']);
+  do_log("-- Clients found: " . count($clients), LOG_ALL);
+
+  /* find last assigned IP */
+  $last_ip = null;
+  foreach($clients as $client)
+  {
+    if ($client['common_name'] == $options['client_name'])
+    {
+      continue;
+    }
+
+    if ($options['verbose'])
+    {
+      do_log("--- Checking IP of client $client[common_name]", LOG_ALL);
+    }
+
+    $ccf_path = sprintf("%s/ccd/%s", $ccb['ovpn_dir'], $client['common_name']);
+    if (!file_exists($ccf_path))
+    {
+      continue;
+    }
+
+    $ip = get_ip_from_ccf($ccf_path);
+    if (empty($ip))
+    {
+      continue;
+    }
+
+    if ($options['verbose'])
+    {
+      do_log("--- IP found: [$ip]", LOG_ALL);
+    }
+
+    if (empty($last_ip))
+    {
+      $last_ip = $ip;
+    }
+    else
+    {
+      $last_ip = get_higher_ip($last_ip, $ip);
+    }
+  }
+
+  do_log("-- Last assigned IP: [$last_ip]", LOG_ALL);
+
+  /* get next available */
+  $next_ip = get_next_ip($start_ip_pool, $end_ip_pool, $last_ip);
+  do_log("-- Next Available IP: [$next_ip]", LOG_ALL);
+
+  $ccf_path = sprintf("%s/ccd/%s", $ccb['ovpn_dir'], $options['client_name']);
+  $fd = fopen($ccf_path, "w");
+  if ($fd === false)
+  {
+    do_log("-- Error creating client config file", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  $a = explode('.', $next_ip);
+  $line = sprintf("ifconfig-push %s %s.%s.%s.%d", $next_ip,
+    $a[0], $a[1], $a[2], intval($a[3]) + 1);
+  fwrite($fd, "$line");
+
+  fclose($fd);
+
+  return(RET_OK);
+}
+
+
+/*
+ * Get next available IP.
+ */
+function get_next_ip($start_ip_pool, $end_ip_pool, $last_ip)
+{
+  global $vpn_ip_last_octet;
+  $next_ip = null;
+
+  $start_octets = explode('.', $start_ip_pool);
+  $end_octets = explode('.', $end_ip_pool);
+
+  if (empty($last_ip))
+  {
+    $next_ip = sprintf("%s.%s.%s.%d", $start_octets[0], $start_octets[1],
+      $start_octets[2], $vpn_ip_last_octet[0]);
+  }
+  else
+  {
+    $last_octets = explode('.', $last_ip);
+    if ($last_ip >= 253)
+    {
+      $next_ip = sprintf("%s.%s.%d.%d", $last_octets[0], $last_octets[1],
+        intval($last_octets[2]) + 1, $vpn_ip_last_octet[0]);
+    }
+    else
+    {
+      $next_ip = sprintf("%s.%s.%s.%d", $last_octets[0], $last_octets[1],
+        $last_octets[2], intval($last_octets[3]) + 4);
+    }
+  }
+
+  return($next_ip);
+}
+
+
+/*
+ *  Return higher IP from the two given IP address.
+ */
+function get_higher_ip($ip_a, $ip_b)
+{
+  $a = explode('.', $ip_a);
+  $b = explode('.', $ip_b);
+
+  if (($b[0] > $a[0]) ||
+    ($b[0] == $a[0] && $b[1] > $a[1]) ||
+    ($b[0] == $a[0] && $b[1] == $a[1] && $b[2] > $a[2]) ||
+    ($b[0] == $a[0] && $b[1] == $a[1] && $b[2] == $a[2] && $b[3] > $a[3]))
+  {
+    return($ip_b);
+  }
+  else
+  {
+    return($ip_a);
+  }
+}
+
+
+/*
+ * Get IP address from client specif config file.
+ */
+function get_ip_from_ccf($ccf_path)
+{
+  $ip = null;
+
+  $fd = fopen($ccf_path, "r");
+  if ($fd === false)
+  {
+    return($ip);
+  }
+
+  while ($line = fgets($fd))
+  {
+    $a = explode(" ", $line);
+    $kw = trim($a[0]);
+    if ($kw !== 'ifconfig-push')
+    {
+      continue;
+    }
+
+    $ip = trim($a[1]);
+    break;
+  }
+
+  return($ip);
+}
+
+
+/*
+ * Get customer clients.
+ */
+function get_customer_clients($customer_name, $type)
+{
+  global $mysqli;
+  $clients = array();
+
+  $cb = get_customer_db_cb($customer_name);
+  if (empty($cb))
+  {
+    do_log("- Customer not found in DB.", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  $sql = sprintf("select cl.* from clients cl join customers c on c.id=cl.customer_id where c.common_name='%s' and cl.type='%s' and cl.deactivated_at is null order by cl.common_name",
+    $customer_name, $type);
+  if ($result = $mysqli->query($sql))
+  {
+    while ($row = $result->fetch_assoc())
+    {
+      $clients[] = array(
+        'id' => $row['id'],
+	'name' => $row['name'],
+        'common_name' => $row['common_name']
+      );
+    }
+  }
+
+  return($clients);
 }
 
 
@@ -323,6 +548,11 @@ function generate_client_config($options, $ccb)
   /* create client specific configuration file */
   if ($options['create_client_config'])
   {
+    $ret = create_client_config($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      return(RET_ERR);
+    }
   }
 
   /* create client entry in database */
@@ -396,6 +626,8 @@ function add_client_to_db($client_name, $client_desc, $customer_name, $type)
     return(RET_ERR);
   }
 
+  do_log("-- Client($type) '$client_name' added under Customer '$customer_name'.", LOG_ALL);
+
   return(RET_OK);
 }
 
@@ -447,7 +679,26 @@ $options = array(
   'db_ip' => 'localhost',
   'db_name' => 'vpn',
   'db_user' => 'vpnuser',
-  'db_password' => 'vpnuser*pw123'
+  'db_password' => 'vpnuser*pw123',
+  'device_vpn_ip_pool' => '10.8.1',
+  'user_vpn_ip_pool' => '10.8.200'
+);
+
+/* VPN IP last octets */
+$vpn_ip_last_octet = array(
+  1, 5, 9, 13, 17,
+  21, 25, 29, 33, 37,
+  41, 45, 49, 53, 57,
+  61, 65, 69, 73, 77,
+  81, 85, 89, 93, 97,
+  101, 105, 109, 113, 117,
+  121, 125, 129, 133, 137,
+  141, 145, 149, 153, 157,
+  161, 165, 169, 173, 177,
+  181, 185, 189, 193, 197,
+  201, 205, 209, 213, 217,
+  221, 225, 229, 233, 237,
+  241, 245, 249, 253
 );
 
 do_log("Starting ${prog_name}", LOG_ALL);
