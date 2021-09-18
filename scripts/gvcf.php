@@ -46,7 +46,9 @@ function print_usage($code)
 {
   global $prog_name;
 
-  echo "Usage: $prog_name <-n client_name><-c customer_name>[-hvOVSD][-t type][-D client_description]\n" .
+  echo "Usage: $prog_name <-n client_name><-c customer_name>[-hvOVSDUR][-t type][-D client_description]\n" .
+       " [-d device_vpn_ip_pool_network][-u user_vpn_ip_pool_network][-I device_ssh_ip][-P device_ssh_port]\n" .
+       " [-N device_ssh_username][-X device_ssh_password]\n" .
        "  Where:\n" .
        "    h = Show help\n" .
        "    v = Verbose\n" .
@@ -60,6 +62,12 @@ function print_usage($code)
        "    c = Customer name\n" .
        "    d = Device VPN IP pool network. Default to 10.8.1\n" .
        "    u = User VPN IP pool network. Defalt 10.8.200\n" .
+       "    U = Upload VPN client configuration into device\n" .
+       "    R = Restart device VPN client service\n" .
+       "    I = Device SSH IP address\n" .
+       "    P = Device SSH Port. Default to 22\n" .
+       "    N = Device SSH Username. Default to pi\n" .
+       "    X = Device SSH Password.\n" .
        "\n";
 
   exit($code);
@@ -79,7 +87,7 @@ function parse_args()
     return(0);
   }
 
-  $opt_str = "hvOVSDt:c:n:D:a:p:d:u:";
+  $opt_str = "hvOVSDURt:c:n:D:a:p:d:u:I:P:N:X:";
 
   $opts = getopt($opt_str);
   if (!$opts)
@@ -124,38 +132,68 @@ function parse_args()
   }
 
   if (isset($opts['a']))
-  { 
+  {
     $options['server_ip'] = $opts['a'];
   }
 
   if (isset($opts['p']))
-  { 
+  {
     $options['server_port'] = $opts['p'];
   }
 
   if (isset($opts['V']))
-  { 
+  {
     $options['create_vpn_config'] = false;
   }
 
   if (isset($opts['S']))
-  { 
+  {
     $options['create_client_config'] = false;
   }
 
   if (isset($opts['D']))
-  { 
+  {
     $options['add_client_to_db'] = false;
   }
 
   if (isset($opts['d']))
-  { 
+  {
     $options['device_vpn_ip_pool'] = $opts['d'];
   }
 
   if (isset($opts['u']))
-  { 
+  {
     $options['user_vpn_ip_pool'] = $opts['u'];
+  }
+
+  if (isset($opts['U']))
+  {
+    $options['upload_client_vpn_config'] = true;
+  }
+
+  if (isset($opts['R']))
+  {
+    $options['restart_client_vpn'] = true;
+  }
+
+  if (isset($opts['I']))
+  {
+    $options['client_ssh_ip'] = $opts['I'];
+  }
+
+  if (isset($opts['P']))
+  {
+    $options['client_ssh_port'] = $opts['P'];
+  }
+
+  if (isset($opts['N']))
+  {
+    $options['client_ssh_username'] = $opts['N'];
+  }
+
+  if (isset($opts['X']))
+  {
+    $options['client_ssh_password'] = $opts['X'];
   }
 }
 
@@ -658,6 +696,103 @@ function delete_client_from_db($client_name, $customer_name)
 }
 
 
+/*
+ * Connect to client using SSH.
+ */
+function ssh_to_client($options, $ccb)
+{
+  $con = @ssh2_connect($options['client_ssh_ip'], $options['client_ssh_port']);
+  if ($con === false)
+  {
+    do_log("-- Unable to connect to $options[client_ssh_ip]:$options[client_ssh_port]", LOG_ALL);
+    return(null);
+  }
+
+  $ret = @ssh2_auth_password($con, $options['client_ssh_username'], $options['client_ssh_password']);
+  if ($ret === false)
+  {
+    do_log("-- Incorrect username/password for $options[client_ssh_username]", LOG_ALL);
+    ssh2_disconnect($con);
+    return(null);
+  }
+
+  return($con);
+}
+
+
+/*
+ * Upload client VPN configuration.
+ */
+function upload_client_vpn_config($options, $ccb)
+{
+  $ovpn_path = $ccb['ovpn_dir'] . '/client/configs/' . $options['type'] . 's/' . $options['client_name'] . '.ovpn';
+  do_log("- Uploading client VPN configuration ($ovpn_path) to device.", LOG_ALL);
+
+  /* check client vpn config */
+  if (!file_exists($ovpn_path))
+  {
+    do_log("-- Client VPN configuration not found: $ovpn_path", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  $con = ssh_to_client($options, $ccb);
+  if ($con === null)
+  {
+    return(RET_ERR);
+  }
+
+  $rem_ovpn_path = 'client.conf.test';
+  $ret = @ssh2_scp_send($con , $ovpn_path, $rem_ovpn_path, 0644);
+  if ($ret === false)
+  {
+    do_log("-- Error uploading file to device ($rem_ovpn_path)", LOG_ALL);
+    ssh2_disconnect($con);
+    return(RET_ERR);
+  }
+
+  $rem_cmd = sprintf("sudo cp %s /etc/openvpn/%s", $rem_ovpn_path, $rem_ovpn_path);
+  $ret = ssh2_exec($con, $rem_cmd);
+  if ($ret === false)
+  {
+    do_log("-- Error executing remote command: $rem_cmd", LOG_ALL);
+    ssh2_disconnect($con);
+    return(RET_ERR);
+  }
+
+  ssh2_disconnect($con);
+
+  return(RET_OK);
+}
+
+
+/*
+ * Restart client VPN.
+ */
+function restart_client_vpn($options, $ccb)
+{
+  do_log("- Restarting client VPN.", LOG_ALL);
+
+  $con = ssh_to_client($options, $ccb);
+  if ($con === null)
+  {
+    return(RET_ERR);
+  }
+
+  $rem_cmd = "sudo systemctl restart openvpn@client";
+  $ret = ssh2_exec($con, $rem_cmd);
+  if ($ret === false)
+  {
+    do_log("-- Error executing remote command: $rem_cmd", LOG_ALL);
+    ssh2_disconnect($con);
+    return(RET_ERR);
+  }
+
+  ssh2_disconnect($con);
+
+  return(RET_OK);
+}
+
+
 /* system */
 date_default_timezone_set("UTC");
 
@@ -681,7 +816,13 @@ $options = array(
   'db_user' => 'vpnuser',
   'db_password' => 'vpnuser*pw123',
   'device_vpn_ip_pool' => '10.8.1',
-  'user_vpn_ip_pool' => '10.8.200'
+  'user_vpn_ip_pool' => '10.8.200',
+  'upload_client_vpn_config' => false,
+  'restart_client_vpn' => false,
+  'client_ssh_ip' => null,
+  'client_ssh_port' => 22,
+  'client_ssh_username' => 'pi',
+  'client_ssh_password' => null
 );
 
 /* VPN IP last octets */
@@ -735,7 +876,45 @@ if (is_client_existing($options['client_name'], $customer_cb) && !$options['over
   exit(1);
 }
 
+if ($options['upload_client_vpn_config'] || $options['restart_client_vpn'])
+{
+  if (empty($options['client_ssh_ip']) || empty($options['client_ssh_port']) ||
+    empty($options['client_ssh_username']) || empty($options['client_ssh_password']))
+  {
+    do_log("- Client IP/Port/Username/Password missing.", LOG_ALL);
+    exit(1);
+  }
+
+  if (!filter_var($options['client_ssh_ip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4))
+  {
+    do_log("- Invalid client SSH IP address: $options[client_ssh_ip]", LOG_ALL);
+    exit(1);
+  }
+}
+
 $ret = generate_client_config($options, $customer_cb);
+if ($ret != RET_OK)
+{
+  exit(1);
+}
+
+if ($options['upload_client_vpn_config'])
+{
+  $ret = upload_client_vpn_config($options, $customer_cb);
+  if ($ret != RET_OK)
+  {
+    exit(1);
+  }
+}
+
+if ($options['restart_client_vpn'])
+{
+  $ret = restart_client_vpn($options, $customer_cb);
+  if ($ret != RET_OK)
+  {
+    exit(1);
+  }
+}
 
 do_log("Done.", LOG_ALL);
 exit(0);
