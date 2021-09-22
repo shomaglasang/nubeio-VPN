@@ -597,7 +597,7 @@ function generate_client_config($options, $ccb)
   if ($options['add_client_to_db'])
   {
     delete_client_from_db($options['client_name'], $options['customer_name']);
-    $ret = add_client_to_db($options['client_name'], $options['client_description'], $options['customer_name'], $options['type']);
+    $ret = add_client_to_db($options['client_name'], $options['client_description'], $options['customer_name'], $options['type'], $ccb);
     if ($ret != RET_OK)
     {
       return(RET_ERR);
@@ -641,9 +641,29 @@ function get_customer_db_cb($customer_name)
 
 
 /*
+ * Get client certificate expiry.
+ */
+function get_client_cert_expiry($client_name, $ccb)
+{
+  $expiry = '';
+  $cmd = sprintf("/usr/bin/openssl x509 -in %s/pki/issued/%s.crt -enddate -noout", $ccb['ca_dir'], $client_name);
+  $output = null;
+  $ret_val = null;
+  $ret = @exec($cmd, $output, $ret_val);
+  if ($ret == 0 && $ret_val == 0)
+  {
+    $a = explode('=', $output[0], 2);
+    $expiry = $a[1];
+  }
+
+  return($expiry);
+}
+
+
+/*
  * Add client to customer in database.
  */
-function add_client_to_db($client_name, $client_desc, $customer_name, $type)
+function add_client_to_db($client_name, $client_desc, $customer_name, $type, $ccb)
 {
   global $mysqli;
   do_log("- Adding client/customer mapping to database.", LOG_ALL);
@@ -655,8 +675,10 @@ function add_client_to_db($client_name, $client_desc, $customer_name, $type)
     return(RET_ERR);
   }
 
-  $sql = sprintf("insert into clients(customer_id,name,description,common_name,type,created_at,updated_at) values(%d, '%s', '%s', '%s', '%s', now(), now())",
-    $cb['id'], $client_name, $client_desc, $client_name, $type);
+  $expiry = get_client_cert_expiry($client_name, $ccb);
+
+  $sql = sprintf("insert into clients(customer_id,name,description,common_name,type,expiry,created_at,updated_at) values(%d, '%s', '%s', '%s', '%s', '%s', now(), now())",
+    $cb['id'], $client_name, $client_desc, $client_name, $type, $expiry);
   $result = $mysqli->query($sql);
   if ($result === false)
   {
