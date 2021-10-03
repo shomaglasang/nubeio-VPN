@@ -64,10 +64,17 @@ function print_usage($code)
        "    u = User VPN IP pool network. Defalt 10.8.200\n" .
        "    U = Upload VPN client configuration into device\n" .
        "    R = Restart device VPN client service\n" .
+       "    a = VPN Server IP address\n" .
+       "    p = VPN Server Port\n" .
        "    I = Device SSH IP address\n" .
        "    P = Device SSH Port. Default to 22\n" .
        "    N = Device SSH Username. Default to pi\n" .
        "    X = Device SSH Password.\n" .
+       "    C = Check customer device certificate expiry.\n" .
+       "    x = Generate and update device config with expired certificate.\n" .
+       "    m = Certificate due to expire in n days. Default to 1.\n" .
+       "    L = Check from list of online devices.\n" .
+       "    F = Check from list of devices in a CSV file.\n" .
        "\n";
 
   exit($code);
@@ -87,7 +94,7 @@ function parse_args()
     return(0);
   }
 
-  $opt_str = "hvOVSDURt:c:n:D:a:p:d:u:I:P:N:X:";
+  $opt_str = "hvOVSDURCxLFt:c:n:D:a:p:d:u:I:P:N:X:m:";
 
   $opts = getopt($opt_str);
   if (!$opts)
@@ -194,6 +201,26 @@ function parse_args()
   if (isset($opts['X']))
   {
     $options['client_ssh_password'] = $opts['X'];
+  }
+
+  if (isset($opts['C']))
+  {
+    $options['check_cert_expiry'] = true;
+  }
+
+  if (isset($opts['x']))
+  {
+    $options['generate_update_expired_device_cert'] = true;
+  }
+
+  if (isset($opts['m']))
+  {
+    $options['days_before_expiration'] = intval($opts['m']);
+  }
+
+  if (isset($opts['F']))
+  {
+    $options['check_devices_from_file'] = true;
   }
 }
 
@@ -555,7 +582,8 @@ function get_customer_clients($customer_name, $type)
       $clients[] = array(
         'id' => $row['id'],
 	'name' => $row['name'],
-        'common_name' => $row['common_name']
+        'common_name' => $row['common_name'],
+        'expiry' => $row['expiry']
       );
     }
   }
@@ -634,6 +662,9 @@ function get_customer_db_cb($customer_name)
     $cb['name'] = $row['name'];
     $cb['common_name'] = $row['common_name'];
     $cb['description'] = $row['description'];
+    $cb['ovpn_dir'] = $row['vpn_server_dir'];
+    $cb['ovpn_status_log'] = $row['vpn_server_status_log'];
+    $cb['ca_dir'] = $row['ca_dir'];
   }
  
   return($cb);
@@ -763,7 +794,20 @@ function upload_client_vpn_config($options, $ccb)
     return(RET_ERR);
   }
 
-  $rem_ovpn_path = 'client.conf.test';
+  $rem_cmd = 'sudo apt-get update && sudo apt-get install -y openvpn';
+  $ret = ssh2_exec($con, $rem_cmd);
+  if ($ret === false)
+  {
+    do_log("-- Error executing remote command: $rem_cmd", LOG_ALL);
+    ssh2_disconnect($con);
+    return(RET_ERR);
+  }
+
+  stream_set_blocking($ret, true);
+  stream_get_contents($ret);
+  fclose($ret);
+
+  $rem_ovpn_path = 'client.conf';
   $ret = @ssh2_scp_send($con , $ovpn_path, $rem_ovpn_path, 0644);
   if ($ret === false)
   {
@@ -815,6 +859,246 @@ function restart_client_vpn($options, $ccb)
 }
 
 
+/*
+ * Restart device.
+ */
+function restart_device($options, $ccb)
+{
+  do_log("- Restarting device.", LOG_ALL);
+
+  $con = ssh_to_client($options, $ccb);
+  if ($con === null)
+  {
+    return(RET_ERR);
+  }
+
+  $rem_cmd = "sudo systemctl restart openvpn@client && sudo systemctl reboot";
+  $ret = ssh2_exec($con, $rem_cmd);
+  if ($ret === false)
+  {
+    do_log("-- Error executing remote command: $rem_cmd", LOG_ALL);
+    ssh2_disconnect($con);
+    return(RET_ERR);
+  }
+
+  ssh2_disconnect($con);
+
+  return(RET_OK);
+}
+
+
+/*
+ * Check customer expired device certs and generate and install if requested.
+ */
+function check_customer_expired_client_device_certs($options, $ccb)
+{
+  $customer_name = $options['customer_name'];
+
+  do_log("- Checking expired device certificates of Customer: $customer_name.", LOG_ALL);
+  $cust_devices = get_customer_clients($ccb['common_name'], 'device');
+  do_log("- Existing customer devices found: " . count($cust_devices), LOG_ALL);
+  $cust_device_names = array();
+  foreach($cust_devices as $d)
+  {
+    $cust_device_names[] = $d['common_name'];
+  }
+
+  if ($options['check_devices_from_file'])
+  {
+    do_log("- Using device list from file", LOG_ALL);
+
+    $devices = get_expired_devices_from_file($options['device_list_file']);
+  }
+  else
+  {
+    do_log("- Using device list from online devices", LOG_ALL);
+    $devices = get_expired_online_devices($options, $ccb, $cust_devices);
+  }
+
+  $n = count($devices);
+  do_log("\n- Expired devices found: $n", LOG_ALL);
+  if (empty($devices) || !$options['generate_update_expired_device_cert'])
+  {
+    return(RET_OK);
+  }
+
+  do_log("- Generating new certificates/configs", LOG_ALL);
+
+  if (empty($options['client_ssh_username']) || empty($options['client_ssh_password']))
+  {
+    do_log("- SSH username/password unspecified! Aborting.", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  if (empty($options['server_ip']) || empty($options['server_port']))
+  {
+    do_log("- VPN Server IP and Port must be specified!", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  /* re-use options and bump the values */
+  $options['overwrite'] = true;
+  $options['create_vpn_config'] = true;
+  $options['create_client_config'] = false;
+  $options['add_client_to_db'] = true;
+  $options['type'] = 'device';
+
+  $i = 1;
+  foreach($devices as $device)
+  {
+    if ($i > 1)
+    {
+      continue;
+    }
+
+    do_log("- [$i/$n] Working on device: $device[common_name], ip: $device[ip]", LOG_ALL);
+    $i++;
+
+    /* set client name in option */
+    $options['client_name'] = $device['common_name'];
+    $options['client_ssh_ip'] = $device['ip'];
+
+    $ret = generate_client_config($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      do_log("- Failed to re-generate device configuration!", LOG_ALL);
+      continue;
+    }
+
+    do_log("- Device configuration successfully re-generated!", LOG_ALL);
+
+    $ret = upload_client_vpn_config($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      do_log("- Failed to upload configuration to device!", LOG_ALL);
+      continue;
+    }
+
+    $ret = restart_device($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      do_log("- Failed to restart device!", LOG_ALL);
+      continue;
+    }
+
+    do_log("- New configuration successfully applied to device!", LOG_ALL);
+  }
+ 
+  return(RET_OK);
+}
+
+
+/*
+ * Get online devices.
+ */
+function get_expired_online_devices($options, $ccb, $client_cbs)
+{
+  $devices = array();
+  $i = 1;
+  $n = count($client_cbs);
+
+  $online_devices = load_customer_online_devices($ccb);
+  do_log("- Online devices found: " . count($online_devices), LOG_ALL);
+  if (empty($online_devices))
+  {
+    do_log("- No online devices found. Nothing to do!", LOG_ALL);
+    return($devices);
+  }
+
+  $cur_tt = new DateTime("now");
+
+  foreach($client_cbs as $client_cb)
+  {
+    $device_name = $client_cb['common_name'];
+    do_log("- [$i/$n] Checking device: $device_name", LOG_ALL);
+    $i++;
+
+    $expiry_tt = new Datetime($client_cb['expiry']);
+    if ($options['days_before_expiration'] > 0)
+    {
+      $s = sprintf("P%dD", $options['days_before_expiration']);
+      $interval = new DateInterval($s);
+      $interval->invert = 1;
+      $expiry_tt->add($interval);
+    }
+
+    if ($cur_tt < $expiry_tt)
+    {
+      do_log("- Certificate still valid. Skipping.", LOG_ALL);
+      continue;
+    }
+
+    do_log("- Certificate has expired!", LOG_ALL);
+
+    if (array_key_exists($device_name, $online_devices))
+    {
+      do_log("- Device is online. Adding to list.", LOG_ALL);
+      $devices[] = array_merge($client_cb, $online_devices[$device_name]);
+    }
+    else
+    {
+      do_log("- Device is offline. Skipping.", LOG_ALL);
+    }
+  }
+
+  return($devices);
+}
+
+
+/*
+ * Load customer online devices
+ */
+function load_customer_online_devices($ccb)
+{
+  $devices = array();
+  $vpn_status_log = $ccb['ovpn_status_log'];
+
+  $fd = fopen($vpn_status_log, "r");
+  if (!$fd)
+  {
+    do_log("- Failed to open status log file: $vpn_status_log", LOG_ALL);
+    return($devices);
+  }
+
+  $found = false;
+  while (($line = fgets($fd)) !== false)
+  {
+    $a = explode(",", $line);
+    if (empty($a))
+    {
+      continue;
+    }
+
+    if (!$found)
+    {
+      if ($a[0] == 'Virtual Address')
+      {
+        $found = true;
+      }
+
+      continue;
+    }
+
+    if (count($a) != 4)
+    {
+      break;
+    }
+
+    $h = array("ip" => $a[0],
+      "common_name" => $a[1],
+      "public_ip" => explode(":", $a[2])[0]
+    );
+
+    $key = $a[1];
+    $devices[$key] = $h;
+  }
+
+  fclose($fd);
+
+  return($devices);
+}
+
+
 /* system */
 date_default_timezone_set("UTC");
 
@@ -844,7 +1128,12 @@ $options = array(
   'client_ssh_ip' => null,
   'client_ssh_port' => 22,
   'client_ssh_username' => 'pi',
-  'client_ssh_password' => null
+  'client_ssh_password' => null,
+  'check_cert_expiry' => false,
+  'generate_update_expired_device_cert' => false,
+  'days_before_expiration' => 0,
+  'check_online_devices' => true,
+  'check_devices_from_file' => false
 );
 
 /* VPN IP last octets */
@@ -878,63 +1167,78 @@ if ($mysqli->connect_errno) {
 
 /* check if customer exists */
 if (empty($options['customer_name']) ||
-  ($customer_cb = get_customer_info($options['customer_name'])) == null)
+  ($customer_cb = get_customer_db_cb($options['customer_name'])) == null)
 {
   do_log("- Unknown/missing customer name!", LOG_ALL);
   exit(1);
 }
 
-/* check if client name is valid */
-if (empty($options['client_name']) || !is_valid_client_name($options['client_name']))
+/* check if we are auto-updating expired customer device certs */
+if ($options['check_cert_expiry'])
 {
-  do_log("- Missing/invalid client name!", LOG_ALL);
-  exit(1);
-}
-
-/* check if client already exists */
-if (is_client_existing($options['client_name'], $customer_cb) && !$options['overwrite'] && $options['create_vpn_config'])
-{
-  do_log("- Client name existing/used.", LOG_ALL);
-  exit(1);
-}
-
-if ($options['upload_client_vpn_config'] || $options['restart_client_vpn'])
-{
-  if (empty($options['client_ssh_ip']) || empty($options['client_ssh_port']) ||
-    empty($options['client_ssh_username']) || empty($options['client_ssh_password']))
-  {
-    do_log("- Client IP/Port/Username/Password missing.", LOG_ALL);
-    exit(1);
-  }
-
-  if (!filter_var($options['client_ssh_ip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4))
-  {
-    do_log("- Invalid client SSH IP address: $options[client_ssh_ip]", LOG_ALL);
-    exit(1);
-  }
-}
-
-$ret = generate_client_config($options, $customer_cb);
-if ($ret != RET_OK)
-{
-  exit(1);
-}
-
-if ($options['upload_client_vpn_config'])
-{
-  $ret = upload_client_vpn_config($options, $customer_cb);
+  $ret = check_customer_expired_client_device_certs($options, $customer_cb);
   if ($ret != RET_OK)
   {
     exit(1);
   }
 }
-
-if ($options['restart_client_vpn'])
+else if ($options['bulk_generate'])
 {
-  $ret = restart_client_vpn($options, $customer_cb);
+}
+else
+{
+  /* check if client name is valid */
+  if (empty($options['client_name']) || !is_valid_client_name($options['client_name']))
+  {
+    do_log("- Missing/invalid client name!", LOG_ALL);
+    exit(1);
+  }
+
+  /* check if client already exists */
+  if (is_client_existing($options['client_name'], $customer_cb) && !$options['overwrite'] && $options['create_vpn_config'])
+  {
+    do_log("- Client name existing/used.", LOG_ALL);
+    exit(1);
+  }
+
+  if ($options['upload_client_vpn_config'] || $options['restart_client_vpn'])
+  {
+    if (empty($options['client_ssh_ip']) || empty($options['client_ssh_port']) ||
+      empty($options['client_ssh_username']) || empty($options['client_ssh_password']))
+    {
+      do_log("- Client IP/Port/Username/Password missing.", LOG_ALL);
+      exit(1);
+    }
+
+    if (!filter_var($options['client_ssh_ip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4))
+    {
+      do_log("- Invalid client SSH IP address: $options[client_ssh_ip]", LOG_ALL);
+      exit(1);
+    }
+  }
+
+  $ret = generate_client_config($options, $customer_cb);
   if ($ret != RET_OK)
   {
     exit(1);
+  }
+
+  if ($options['upload_client_vpn_config'])
+  {
+    $ret = upload_client_vpn_config($options, $customer_cb);
+    if ($ret != RET_OK)
+    {
+      exit(1);
+    }
+  }
+
+  if ($options['restart_client_vpn'])
+  {
+    $ret = restart_client_vpn($options, $customer_cb);
+    if ($ret != RET_OK)
+    {
+      exit(1);
+    }
   }
 }
 
