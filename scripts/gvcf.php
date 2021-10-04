@@ -17,6 +17,15 @@ define('LOG_ALL',           0x3);
 
 
 /*
+ * Init logging.
+ */
+function init_log($name, $flags = LOG_PID, $fac = LOG_DAEMON)
+{
+  openlog($name, $flags, $fac);
+}
+
+
+/*
  * Log message.
  */
 function do_log($msg, $out = LOG_SYSLOG, $level = LOG_INFO)
@@ -916,7 +925,7 @@ function check_customer_expired_client_device_certs($options, $ccb)
   }
 
   $n = count($devices);
-  do_log("\n- Expired devices found: $n", LOG_ALL);
+  do_log("- Expired devices found: $n", LOG_ALL);
   if (empty($devices) || !$options['generate_update_expired_device_cert'])
   {
     return(RET_OK);
@@ -1152,6 +1161,8 @@ $vpn_ip_last_octet = array(
   221, 225, 229, 233, 237,
   241, 245, 249, 253
 );
+
+init_log('gvcf');
 
 do_log("Starting ${prog_name}", LOG_ALL);
 
