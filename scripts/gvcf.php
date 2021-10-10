@@ -84,6 +84,9 @@ function print_usage($code)
        "    m = Certificate due to expire in n days. Default to 1.\n" .
        "    L = Check from list of online devices.\n" .
        "    F = Check from list of devices in a CSV file.\n" .
+       "    B = Bulk generate and install device configs from a CSV file.\n" .
+       "    l = List of devices in a CSV file for bulk update/install.\n" .
+       "    G = When used with bulk (B), generate and install otherwise no changes.\n" .
        "\n";
 
   exit($code);
@@ -103,7 +106,7 @@ function parse_args()
     return(0);
   }
 
-  $opt_str = "hvOVSDURCxLFt:c:n:D:a:p:d:u:I:P:N:X:m:";
+  $opt_str = "hvOVSDURCxLFBGt:c:n:D:a:p:d:u:I:P:N:X:m:l:";
 
   $opts = getopt($opt_str);
   if (!$opts)
@@ -230,6 +233,21 @@ function parse_args()
   if (isset($opts['F']))
   {
     $options['check_devices_from_file'] = true;
+  }
+
+  if (isset($opts['B']))
+  {
+    $options['bulk_generate'] = true;
+  }
+
+  if (isset($opts['l']))
+  {
+    $options['device_list'] = $opts['l'];
+  }
+
+  if (isset($opts['G']))
+  {
+    $options['go_bulk'] = true;
   }
 }
 
@@ -562,6 +580,8 @@ function get_ip_from_ccf($ccf_path)
     $ip = trim($a[1]);
     break;
   }
+
+  fclose($fd);
 
   return($ip);
 }
@@ -955,10 +975,10 @@ function check_customer_expired_client_device_certs($options, $ccb)
   $i = 1;
   foreach($devices as $device)
   {
-    if ($i > 1)
+    /* if ($i > 1)
     {
       continue;
-    }
+    } */
 
     do_log("- [$i/$n] Working on device: $device[common_name], ip: $device[ip]", LOG_ALL);
     $i++;
@@ -1108,6 +1128,179 @@ function load_customer_online_devices($ccb)
 }
 
 
+/*
+ * Generate bulk device configs.
+ */
+function generate_bulk_device_configs($options, $ccb)
+{
+  $device_list = $options['device_list'];
+
+  if (empty($device_list) || !file_exists($device_list))
+  {
+    do_log("- Device list not found: $device_list", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  /* load devices from file */
+  $devices = load_devices_from_file($device_list);
+  if ($devices == NULL)
+  {
+    return(RET_ERR);
+  }
+
+  $n = count($devices);
+  do_log("- Devices found: $n", LOG_ALL);
+
+  if (empty($devices))
+  {
+    return(RET_OK);
+  }
+
+  /* re-use options and bump the values */
+  $options['overwrite'] = true;
+  $options['create_vpn_config'] = true;
+  $options['create_client_config'] = true;
+  $options['add_client_to_db'] = true;
+
+  $i = 1;
+  $generated = 0;
+  $installed = 0;
+  foreach($devices as $dev_name => $dev_info)
+  {
+    do_log("- [$i/$n] Working on device: $dev_name / Type: $dev_info[type]", LOG_ALL);
+    do_log("- IP: $dev_info[ip] / Port: $dev_info[port]", LOG_ALL);
+
+    $i++;
+
+    if (!$options['go_bulk'])
+    {
+      continue;
+    }
+
+    /* set client name in option */
+    $options['client_name'] = $dev_name;
+    $options['client_description'] = $dev_info['desc'];
+    $options['type'] = $dev_info['type'];
+
+    $ret = generate_client_config($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      do_log("- Failed to generate device configuration!", LOG_ALL);
+      continue;
+    }
+
+    do_log("- Device configuration successfully generated!", LOG_ALL);
+    $generated++;
+
+    if (empty($dev_info['ip']) || empty($dev_info['port']))
+    {
+      continue;
+    }
+
+    $options['client_ssh_ip'] = $dev_info['ip'];
+    $options['client_ssh_port'] = $dev_info['port'];
+    if (!empty($dev_info['username']))
+    {
+      $options['client_ssh_username'] = $dev_info['username'];
+    }
+
+    if (!empty($dev_info['password']))
+    {
+      $options['client_ssh_password'] = $dev_info['password'];
+    }
+
+    if (empty($options['client_ssh_username']) || empty($options['client_ssh_password']))
+    {
+      continue;
+    }
+
+    $ret = upload_client_vpn_config($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      do_log("- Failed to upload configuration to device!", LOG_ALL);
+      continue;
+    }
+
+    $ret = restart_device($options, $ccb);
+    if ($ret != RET_OK)
+    {
+      do_log("- Failed to restart device!", LOG_ALL);
+      continue;
+    }
+
+    do_log("- New configuration successfully applied to device!", LOG_ALL);
+    $installed++;
+  }
+
+  do_log("- Generated: $generated / Installed: $installed", LOG_ALL);
+
+  return(RET_OK);
+}
+
+
+/*
+ * Load devices from file.
+ */
+function load_devices_from_file($device_list, $with_header = true)
+{
+  $devices = array();
+
+  $fd = fopen($device_list, "r");
+  if (!$fd)
+  {
+    do_log("- Error opending device list file: $device_list", LOG_ALL);
+    return(RET_ERR);
+  }
+
+  $first = true;
+  while ($line = fgets($fd))
+  {
+    /* skip header */
+    if ($first && $with_header)
+    {
+      $first = false;
+      continue;
+    }
+
+    $line= trim($line);
+    /* skip commented entry */
+    if ($line[0] === '#')
+    {
+      continue;
+    }
+
+    $a = explode(',', $line);
+    /* must include at least the device name, description and type */
+    if (count($a) < 3)
+    {
+      continue;
+    }
+
+    $d_name = trim($a[0]);
+    $d_desc = trim($a[1]);
+    $d_type = trim($a[2]);
+    $d_ip = (count($a) > 3) ? trim($a[3]) : '';
+    $d_port = (count($a) > 4) ? trim($a[4]) : '';
+    $d_username  = (count($a) > 5) ? trim($a[5]) : '';
+    $d_password = (count($a) > 6) ? trim($a[6]) : '';
+
+    $devices[$d_name] = array(
+      'name' => $d_name,
+      'desc' => $d_desc,
+      'type' => $d_type,
+      'ip' => $d_ip,
+      'port' => $d_port,
+      'username' => $d_username,
+      'password' => $d_password
+    );
+  }
+
+  fclose($fd);
+
+  return($devices);
+}
+
+
 /* system */
 date_default_timezone_set("UTC");
 
@@ -1142,7 +1335,10 @@ $options = array(
   'generate_update_expired_device_cert' => false,
   'days_before_expiration' => 0,
   'check_online_devices' => true,
-  'check_devices_from_file' => false
+  'check_devices_from_file' => false,
+  'bulk_generate' => false,
+  'device_list' => '',
+  'go_bulk' => false
 );
 
 /* VPN IP last octets */
@@ -1195,6 +1391,11 @@ if ($options['check_cert_expiry'])
 }
 else if ($options['bulk_generate'])
 {
+  $ret = generate_bulk_device_configs($options, $customer_cb);
+  if ($ret != RET_OK)
+  {
+    exit(1);
+  }
 }
 else
 {
