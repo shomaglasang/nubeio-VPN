@@ -1333,7 +1333,7 @@ $options = array(
   'client_ssh_password' => null,
   'check_cert_expiry' => false,
   'generate_update_expired_device_cert' => false,
-  'days_before_expiration' => 0,
+  'days_before_expiration' => 1,
   'check_online_devices' => true,
   'check_devices_from_file' => false,
   'bulk_generate' => false,
@@ -1376,7 +1376,7 @@ if ($mysqli->connect_errno) {
 if (empty($options['customer_name']) ||
   ($customer_cb = get_customer_db_cb($options['customer_name'])) == null)
 {
-  do_log("- Unknown/missing customer name!", LOG_ALL);
+  do_log("- Unknown/missing customer name: $options[customer_name]", LOG_ALL);
   exit(1);
 }
 
