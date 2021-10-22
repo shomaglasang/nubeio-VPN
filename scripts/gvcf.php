@@ -604,7 +604,7 @@ function get_customer_clients($customer_name, $type)
 
   $sql = sprintf("select cl.* from clients cl join customers c on c.id=cl.customer_id where c.common_name='%s' and cl.type='%s' and cl.deactivated_at is null order by cl.common_name",
     $customer_name, $type);
-  if ($result = $mysqli->query($sql))
+  if ($result = $mysqli->query($sql, MYSQLI_USE_RESULT))
   {
     while ($row = $result->fetch_assoc())
     {
@@ -684,18 +684,21 @@ function get_customer_db_cb($customer_name)
   $cb = array();
 
   $sql = "select * from customers where common_name='" . $customer_name . "' and deactivated_at is null";
-  $result = $mysqli->query($sql);
-  if ($result && ($row = $result->fetch_assoc()))
+  $result = $mysqli->query($sql, MYSQLI_USE_RESULT);
+  if ($result)
   {
-    $cb['id'] = $row['id'];
-    $cb['name'] = $row['name'];
-    $cb['common_name'] = $row['common_name'];
-    $cb['description'] = $row['description'];
-    $cb['ovpn_dir'] = $row['vpn_server_dir'];
-    $cb['ovpn_status_log'] = $row['vpn_server_status_log'];
-    $cb['ca_dir'] = $row['ca_dir'];
+    if ($row = $result->fetch_assoc())
+    {
+      $cb['id'] = $row['id'];
+      $cb['name'] = $row['name'];
+      $cb['common_name'] = $row['common_name'];
+      $cb['description'] = $row['description'];
+      $cb['ovpn_dir'] = $row['vpn_server_dir'];
+      $cb['ovpn_status_log'] = $row['vpn_server_status_log'];
+      $cb['ca_dir'] = $row['ca_dir'];
+    }
   }
- 
+
   return($cb);
 }
 
@@ -739,7 +742,7 @@ function add_client_to_db($client_name, $client_desc, $customer_name, $type, $cc
 
   $sql = sprintf("insert into clients(customer_id,name,description,common_name,type,expiry,created_at,updated_at) values(%d, '%s', '%s', '%s', '%s', '%s', now(), now())",
     $cb['id'], $client_name, $client_desc, $client_name, $type, $expiry);
-  $result = $mysqli->query($sql);
+  $result = $mysqli->query($sql, MYSQLI_USE_RESULT);
   if ($result === false)
   {
     do_log("- Error adding client mapping!", LOG_ALL);
@@ -767,7 +770,7 @@ function delete_client_from_db($client_name, $customer_name)
   }
 
   $sql = sprintf("delete from clients where customer_id=%d and common_name='%s'", $cb['id'], $client_name);
-  $result = $mysqli->query($sql);
+  $result = $mysqli->query($sql, MYSQLI_USE_RESULT);
   if ($result === false)
   {
     do_log("- Error deleting client mapping!", LOG_ALL);
