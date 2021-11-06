@@ -136,6 +136,17 @@ function get_client_info($device_cn, $customer_id)
 }
 
 
+function update_client_info($device_cn, $customer_id, $desc)
+{
+  global $mysqli;
+
+  $sql = sprintf("update clients set description='%s' where customer_id=%d and common_name='%s'",
+    $desc, $customer_id, $device_cn);
+
+  $result = $mysqli->query($sql);
+  return(($result) ? true: false);
+}
+
 function get_vpn_client_servers($clients)
 {
   $servers = array();

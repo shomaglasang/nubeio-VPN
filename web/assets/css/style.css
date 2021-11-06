@@ -1,7 +1,7 @@
 body {
   font-family: Arial, Georgia, Serif;
   padding: 10px;
-  width: 930px;
+  width: 1030px;
 }
 
 .page_title, .table_title {
@@ -13,8 +13,8 @@ body {
   font-size: 15px;
 }
 
-table {
-  width: 930px;
+table.online {
+  width: 1030px;
   border-collapse: collapse;
 }
 
@@ -22,6 +22,10 @@ table {
   font-size: 14px;
   border: 1px solid #ddd;
   padding: 5px;
+}
+
+.online .description {
+  width: 250px;
 }
 
 th, td {
@@ -35,5 +39,52 @@ th, td {
 
 .customer_filter {
   text-align: right;
+}
+
+.modal-body {
+  padding: 15px 10px;
+  text-align:center;
+}
+
+.modal-dialog{
+  width: auto;
+  margin: 10px auto !important;
+  max-width: 450px;
+}
+
+table.popup_table {
+  font-size: 14px;
+  width: 100%;
+}
+
+.popup_table td {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.row_label {
+  width: 100px;
+}
+
+.row_value {
+  width: auto;
+}
+
+.row_input_readonly {
+  border: none;
+}
+
+.row_value input, .row_input_value{
+  width: 100%;
+}
+
+.error {
+  color: red;
+  font-weight: bold;
+}
+
+.success {
+  color: green;
+  font-weight: bold;
 }
 
