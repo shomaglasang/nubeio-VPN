@@ -162,16 +162,18 @@ echo "</body>
       cache: false,
       success: function(data){
         if (data.status === 'success') {
-          $('#notice').html('Client successfully updated!');
+          $('#outer_notice span').removeClass('error');
           $('#outer_notice span').addClass('success');
+          $('#notice').html('Client successfully updated!');
           setTimeout(function(){
             jQuery('#loadEditClientModal').modal('hide');
           }, 2000);
 
           jQuery('#' + row_id).find('td:eq(5)').html(new_desc);
         } else {
-          $('#notice').html(data.message);
+          $('#outer_notice span').removeClass('success');
           $('#outer_notice span').addClass('error');
+          $('#notice').html(data.message);
         }
       }
     });

@@ -15,7 +15,7 @@ $error_message = '';
 if (strlen($client_description) > 100)
 {
   $input_good = false;
-  $error_message = 'Description too long';
+  $error_message = 'Description too long!';
 }
 
 if ($input_good)
