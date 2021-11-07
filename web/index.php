@@ -139,8 +139,8 @@ echo "</body>
     var customer_id = a.data('customer_id');
     var customer_name = a.data('customer_name');
     var name = a.data('client_name');
-    var description = a.data('client_description');
     var row_id = a.data('row_id');
+    var description  = jQuery('#' + row_id).find('td:eq(5)').html();
     var modal = $(this);
     modal.find('#client_name').val(name);
     modal.find('#client_description').val(description);
