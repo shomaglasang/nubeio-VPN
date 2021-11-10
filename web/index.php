@@ -22,7 +22,7 @@ $sel_html = '<select name="customer_id" id="customer_id" class="custom-select bl
 $sel_html .= '<option selected value="all">All</option>';
 foreach($servers as $server)
 {
-  $sel_html .= '<option value="' . $server['id'] . '">' . $server['name'] . '</option>';
+  $sel_html .= '<option value="' . $server['id'] . '">' . $server['name'] . '&nbsp;&nbsp;&nbsp(' . $server['vpn_server_port'] . ')</option>';
 }
 
 $sel_html .= '</select>';
@@ -34,11 +34,18 @@ echo '<div id="client_list"><table id="client_devices" class="online">
   <td>Public IP</td><td class="description">Description</td><td>Customer Name</td><td class="edit_device_col">Edit</td></tr>';
 echo '</table></div>';
 
-echo '<br/><br/><div class="table_title">Users</div>';
+echo '<div id="online_servers" style="display:none;"><br/><br/><div class="table_title">Servers</div>';
+echo '<table id="client_servers" class="online">
+  <tr class="table_headers"><td>#&nbsp;&nbsp;&nbsp;</td><td>VPN Client Name</td><td>VPN IP</td><td>Expiry</td>
+  <td>Public IP</td><td class="description">Description</td><td>Customer Name</td><td class="edit_device_col">Edit</td></tr>';
+echo '</table></div>';
+
+echo '<div id="online_users" style="display:none;"><br/><br/><div class="table_title">Users</div>';
 echo '<table id="client_users" class="online">
   <tr class="table_headers"><td>#&nbsp;&nbsp;&nbsp;</td><td>VPN Client Name</td><td>VPN IP</td><td>Expiry</td>
   <td>Public IP</td><td class="description">Description</td><td>Customer Name</td><td class="edit_device_col">Edit</td></tr>';
-echo '</table>';
+echo '</table></div>';
+echo '<div style="padding-bottom: 25px;"></div>';
 
 echo '<div class="text-center modal-btn">
   <div class="modal fade" id="loadEditClientModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
@@ -82,6 +89,7 @@ echo "</body>
 
   function update_page() {
     $('.device_entry').remove();
+    $('.server_entry').remove();
     $('.user_entry').remove();
     var customer_id = $('#customer_id').val();
     $.ajax({
@@ -111,23 +119,51 @@ echo "</body>
           $('#client_devices tr:last').after(row);
         });
 
-        data['users'].forEach(function (d, i){
-          var tr_id = 'client_user_' + (i+1);
-          var row = '<tr class=\"user_entry\" id=\"' + tr_id + '\"><td>' + (i+1) + '</td>';
-          row += '<td>' + d['common_name'] + '</td>';
-          row += '<td>' + d['ip'] + '</td>';
-          row += '<td>' + d['cert_expiry'] + '</td>';
-          row += '<td>' + d['public_ip'] + '</td>';
-          row += '<td class=\"description\">' + d['description'] + '</td>';
-          row += '<td>' + d['customer_name'] + '</td>';
-          row += '<td><a href=\"#\" class=\"edit_device_cell\" data-toggle=\"modal\" data-target=\"#loadEditClientModal\" ' +
-            'data-customer_id=\"' + d['customer_id'] + '\" data-client_name=\"' + d['common_name'] + '\" ' +
-            'data-customer_name=\"' + d['customer_name'] + '\" data-client_description=\"' + d['description'] + '\" ' +
-            'data-row_id=\"' + tr_id + '\" ' +
-            '><i class=\"far fa-edit\"></i></a></td>';
-          row += '</tr>';
-          $('#client_users tr:last').after(row);
-        });
+        if (data['servers'].length > 0) {
+          data['servers'].forEach(function (d, i){
+            var tr_id = 'client_server_' + (i+1);
+            var row = '<tr class=\"server_entry\" id=\"' + tr_id + '\"><td>' + (i+1) + '</td>';
+            row += '<td>' + d['common_name'] + '</td>';
+            row += '<td>' + d['ip'] + '</td>';
+            row += '<td>' + d['cert_expiry'] + '</td>';
+            row += '<td>' + d['public_ip'] + '</td>';
+            row += '<td class=\"description\">' + d['description'] + '</td>';
+            row += '<td>' + d['customer_name'] + '</td>';
+            row += '<td><a href=\"#\" class=\"edit_device_cell\" data-toggle=\"modal\" data-target=\"#loadEditClientModal\" ' +
+              'data-customer_id=\"' + d['customer_id'] + '\" data-client_name=\"' + d['common_name'] + '\" ' +
+              'data-customer_name=\"' + d['customer_name'] + '\" data-client_description=\"' + d['description'] + '\" ' +
+              'data-row_id=\"' + tr_id + '\" ' +
+              '><i class=\"far fa-edit\"></i></a></td>';
+            row += '</tr>';
+            $('#client_servers tr:last').after(row);
+          });
+          $('#online_servers').show();
+        } else {
+          $('#online_servers').hide();
+        }
+
+        if (data['users'].length > 0) {
+          data['users'].forEach(function (d, i){
+            var tr_id = 'client_user_' + (i+1);
+            var row = '<tr class=\"user_entry\" id=\"' + tr_id + '\"><td>' + (i+1) + '</td>';
+            row += '<td>' + d['common_name'] + '</td>';
+            row += '<td>' + d['ip'] + '</td>';
+            row += '<td>' + d['cert_expiry'] + '</td>';
+            row += '<td>' + d['public_ip'] + '</td>';
+            row += '<td class=\"description\">' + d['description'] + '</td>';
+            row += '<td>' + d['customer_name'] + '</td>';
+            row += '<td><a href=\"#\" class=\"edit_device_cell\" data-toggle=\"modal\" data-target=\"#loadEditClientModal\" ' +
+              'data-customer_id=\"' + d['customer_id'] + '\" data-client_name=\"' + d['common_name'] + '\" ' +
+              'data-customer_name=\"' + d['customer_name'] + '\" data-client_description=\"' + d['description'] + '\" ' +
+              'data-row_id=\"' + tr_id + '\" ' +
+              '><i class=\"far fa-edit\"></i></a></td>';
+            row += '</tr>';
+            $('#client_users tr:last').after(row);
+          });
+          $('#online_users').show();
+        } else {
+          $('#online_users').hide();
+        }
       },
       error: function(data){
       }

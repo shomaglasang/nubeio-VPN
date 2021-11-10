@@ -104,7 +104,8 @@ function get_vpn_servers($customer_id = null)
         'description' => $row['description'],
         'vpn_server_dir' => $row['vpn_server_dir'],
         'vpn_server_config' => $row['vpn_server_config'],
-        'vpn_server_status_log' => $row['vpn_server_status_log']
+        'vpn_server_status_log' => $row['vpn_server_status_log'],
+        'vpn_server_port' => $row['server_port']
       );
     }
   }

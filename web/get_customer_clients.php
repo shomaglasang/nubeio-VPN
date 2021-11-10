@@ -8,23 +8,30 @@ $customer_id = (isset($_GET['customer_id']) && $_GET['customer_id'] != 'all') ? 
 
 $devices = array();
 $users = array();
+$servers = array();
 
 $vpn_clients = get_vpn_clients($customer_id);
 foreach($vpn_clients as $vpn_client)
 {
   $client_info = get_client_info($vpn_client['common_name'], $vpn_client['customer_id']);
   $h = array_merge($vpn_client, $client_info);
-  if ($client_info['type'] == 'user')
+  switch ($client_info['type'])
   {
-    $users[] = $h;
-  }
-  else
-  {
-    $devices[] = $h;
+    case 'user':
+      $users[] = $h;
+      break;
+
+    case 'device':
+      $devices[] = $h;
+      break;
+
+    case 'server':
+      $servers[] = $h;
+      break;
   }
 }
 
-echo json_encode(array('devices' => $devices, 'users' => $users));
+echo json_encode(array('devices' => $devices, 'users' => $users, 'servers' => $servers));
 
 close_db($mysqli);
 exit();
